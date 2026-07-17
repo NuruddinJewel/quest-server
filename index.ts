@@ -2,18 +2,19 @@ import dns from "node:dns";
 dns.setServers(["8.8.8.8", "8.8.4.4"]);
 
 import express, { Request, Response } from "express";
-import dotenv from "dotenv";
 import cors from "cors";
-import { MongoClient, ServerApiVersion } from "mongodb";
+import { MongoClient, ServerApiVersion, ObjectId } from "mongodb";
+import dotenv from "dotenv";
 
 dotenv.config();
 
 const app = express();
-const PORT: number = Number(process.env.PORT) || 5000;
-const uri: string = process.env.MONGODB_URI as string;
-
 app.use(cors());
 app.use(express.json());
+
+const PORT: number = Number(process.env.PORT) || 5000;
+const uri: string = process.env.MONGODB_URI || "";
+const dbName: string = process.env.DB_NAME || "spectre";
 
 const client = new MongoClient(uri, {
     serverApi: {
@@ -23,24 +24,199 @@ const client = new MongoClient(uri, {
     },
 });
 
+
+function parseQuantity(qty: any): number {
+    if (!qty) return 0;
+    if (typeof qty === 'object') {
+        return Number(qty.Value ?? qty.value ?? 0);
+    }
+    const parsed = parseInt(qty, 10);
+    return isNaN(parsed) ? 0 : parsed;
+}
+
 app.get("/", (req: Request, res: Response) => {
-    res.send("Hello World!");
+    res.send("Gaming Oasis Marketplace API running");
 });
 
-async function run(): Promise<void> {
+// 1.  (Popular/Featured) Games API
+app.get("/api/games", async (req: Request, res: Response) => {
     try {
-        // Connect the client to the server (optional starting in v4.7)
+        const db = client.db(dbName);
+        const { popular, featured, ownerId } = req.query;
+
+        const query: Record<string, unknown> = {};
+        if (popular === "true") query.isPopular = true;
+        if (featured === "true") query.isFeatured = true;
+        if (ownerId) query.ownerId = ownerId;
+
+        const games = await db.collection("games").find(query).toArray();
+
+        const sanitizedGames = games.map(game => ({
+            ...game,
+            quantity: parseQuantity(game.quantity),
+            price: Number(game.price) || 0
+        }));
+
+        res.status(200).json(sanitizedGames);
+    } catch (error: any) {
+        res.status(500).json({ error: "Failed to fetch games", details: error.message });
+    }
+});
+
+//  Single Games API 
+app.get("/api/games/:id", async (req: Request, res: Response) => {
+    try {
+        const idParam = req.params.id;
+        const id = Array.isArray(idParam) ? idParam[0] : idParam;
+
+        if (!id || !ObjectId.isValid(id)) {
+            res.status(400).json({ error: "Invalid Game ID structure" });
+            return;
+        }
+
+        const db = client.db(dbName);
+        const game = await db.collection("games").findOne({ _id: new ObjectId(id) });
+
+        if (!game) {
+            res.status(404).json({ message: "Game not found in the vault" });
+            return;
+        }
+
+        res.status(200).json({
+            ...game,
+            quantity: parseQuantity(game.quantity),
+            price: Number(game.price) || 0
+        });
+    } catch (error: any) {
+        res.status(500).json({ error: "Failed to fetch game details", details: error.message });
+    }
+});
+
+// New Game Add API
+app.post("/api/games", async (req: Request, res: Response) => {
+    try {
+        const db = client.db(dbName);
+        const newGame = req.body;
+
+        if (newGame.quantity !== undefined) {
+            newGame.quantity = parseQuantity(newGame.quantity);
+        }
+        if (newGame.price !== undefined) {
+            newGame.price = Number(newGame.price) || 0;
+        }
+
+        const result = await db.collection("games").insertOne(newGame);
+        res.status(201).json({ message: "Game CD added to vault successfully", insertedId: result.insertedId });
+    } catch (error: any) {
+        res.status(500).json({ error: "Failed to add game", details: error.message });
+    }
+});
+
+// Game Delete API
+app.delete("/api/games/:id", async (req: Request, res: Response) => {
+    try {
+        const idParam = req.params.id;
+        const id = Array.isArray(idParam) ? idParam[0] : idParam;
+
+        if (!id || !ObjectId.isValid(id)) {
+            res.status(400).json({ error: "Invalid Game ID" });
+            return;
+        }
+
+        const db = client.db(dbName);
+        const result = await db.collection("games").deleteOne({ _id: new ObjectId(id) });
+
+        if (result.deletedCount === 0) {
+            res.status(404).json({ error: "Game not found" });
+            return;
+        }
+
+        res.json({ message: "Game CD removed from vault successfully" });
+    } catch (error: any) {
+        res.status(500).json({ error: "Failed to delete game", details: error.message });
+    }
+});
+
+// Game Buy 
+app.patch("/api/games/:id/buy", async (req: Request, res: Response) => {
+    try {
+        const idParam = req.params.id;
+        const id = Array.isArray(idParam) ? idParam[0] : idParam;
+
+        if (!id || !ObjectId.isValid(id)) {
+            res.status(400).json({ error: "Invalid Game ID" });
+            return;
+        }
+
+        const { buyerId, buyerName, buyerEmail, quantity } = req.body;
+        const buyQty = Number(quantity) || 1;
+
+        const db = client.db(dbName);
+        const game = await db.collection("games").findOne({ _id: new ObjectId(id) });
+
+        if (!game) {
+            res.status(404).json({ error: "Game CD not found" });
+            return;
+        }
+
+        const currentQty = parseQuantity(game.quantity);
+
+        if (currentQty < buyQty) {
+            res.status(400).json({ error: "Not enough CD stock available in vault!" });
+            return;
+        }
+
+        await db.collection("games").updateOne(
+            { _id: new ObjectId(id) },
+            { $set: { quantity: currentQty - buyQty } }
+        );
+
+        await db.collection("orders").insertOne({
+            gameId: id,
+            gameTitle: game.title,
+            buyerId,
+            buyerName,
+            buyerEmail,
+            price: Number(game.price) || 0,
+            quantity: buyQty,
+            purchasedAt: new Date(),
+        });
+
+        res.json({ message: "Order placed successfully! Keep gaming!" });
+    } catch (error: any) {
+        res.status(500).json({ error: "Failed to process purchase", details: error.message });
+    }
+});
+
+// Order History
+app.get("/api/orders", async (req: Request, res: Response) => {
+    try {
+        const db = client.db(dbName);
+        const { buyerId } = req.query;
+
+        const filter: Record<string, unknown> = {};
+        if (buyerId) filter.buyerId = buyerId;
+
+        const orders = await db.collection("orders").find(filter).toArray();
+        res.status(200).json(orders);
+    } catch (error: any) {
+        res.status(500).json({ error: "Failed to fetch orders", details: error.message });
+    }
+});
+
+// Database Connection
+async function startServer() {
+    try {
         await client.connect();
-        // Send a ping to confirm a successful connection
         await client.db("admin").command({ ping: 1 });
-        console.log("Pinged your deployment. You successfully connected to MongoDB!");
-    } finally {
-        // Ensures that the client will close when you finish/error
-        // await client.close();
+        console.log(`Connected to MongoDB Atlas! Database: [${dbName}] 🚀`);
+
+        app.listen(PORT, () => {
+            console.log(`Backend server running on port ${PORT}`);
+        });
+    } catch (error) {
+        console.error("Database connection failed during startup:", error);
     }
 }
-run().catch(console.dir);
 
-app.listen(PORT, () => {
-    console.log(`Example app listening on port ${PORT}`);
-});
+startServer();
