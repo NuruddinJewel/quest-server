@@ -53,7 +53,7 @@ app.get("/api/games", async (req: Request, res: Response) => {
 
         const sanitizedGames = games.map(game => ({
             ...game,
-            quantity: parseQuantity(game.quantity),
+            quantity: parseQuantity(game.stock),
             price: Number(game.price) || 0
         }));
 
@@ -84,11 +84,135 @@ app.get("/api/games/:id", async (req: Request, res: Response) => {
 
         res.status(200).json({
             ...game,
-            quantity: parseQuantity(game.quantity),
+            quantity: parseQuantity(game.stock),
             price: Number(game.price) || 0
         });
     } catch (error: any) {
         res.status(500).json({ error: "Failed to fetch game details", details: error.message });
+    }
+});
+//2
+app.put("/api/games/:id", async (req: Request, res: Response) => {
+    try {
+        const idParam = req.params.id;
+        const id = Array.isArray(idParam) ? idParam[0] : idParam;
+
+        if (!id || !ObjectId.isValid(id)) {
+            res.status(400).json({ error: "Invalid Game ID" });
+            return;
+        }
+
+        const updates = { ...req.body };
+        delete updates._id;
+
+        if (updates.stock !== undefined) updates.stock = parseQuantity(updates.stock);
+        if (updates.price !== undefined) updates.price = Number(updates.price) || 0;
+
+        const db = client.db(dbName);
+        const result = await db.collection("games").updateOne(
+            { _id: new ObjectId(id) },
+            { $set: updates }
+        );
+
+        if (result.matchedCount === 0) {
+            res.status(404).json({ error: "Game not found" });
+            return;
+        }
+
+        res.json({ message: "Game updated successfully" });
+    } catch (error: any) {
+        res.status(500).json({ error: "Failed to update game", details: error.message });
+    }
+});
+
+//Admin Stats
+// app.get("/api/admin/stats", async (req: Request, res: Response) => {
+//     try {
+//         const db = client.db(dbName);
+
+//         const orders = await db.collection("orders").find({ status: "approved" }).toArray();
+//         const totalRevenue = orders.reduce((sum, o) => sum + (Number(o.price) || 0) * (Number(o.quantity) || 0), 0);
+
+//         const totalOrders = await db.collection("orders").countDocuments();
+//         const totalGamesLive = await db.collection("games").countDocuments();
+//         const activeUsers = (await db.collection("orders").distinct("buyerId")).length;
+
+//         res.json({ totalRevenue, totalOrders, totalGamesLive, activeUsers });
+//     } catch (error: any) {
+//         res.status(500).json({ error: "Failed to fetch stats", details: error.message });
+//     }
+// });
+
+//2
+
+app.get("/api/admin/stats", async (req: Request, res: Response) => {
+    try {
+        const db = client.db(dbName);
+
+        // 'approved' Status Order
+        const orders = await db.collection("orders").find({ status: "approved" }).toArray();
+
+        // Revenue handling
+        const totalRevenue = orders.reduce((sum, o) => {
+            const price = typeof o.price === 'number' ? o.price : parseFloat(o.price) || 0;
+            const quantity = typeof o.quantity === 'number' ? o.quantity : parseInt(o.quantity) || 0;
+            return sum + (price * quantity);
+        }, 0);
+
+        // Count
+        const totalOrders = await db.collection("orders").countDocuments();
+        const totalGamesLive = await db.collection("games").countDocuments();
+        const activeUsers = (await db.collection("orders").distinct("buyerId")).length;
+
+        // Frontend Response
+        res.json({
+            totalRevenue: Number(totalRevenue.toFixed(2)),
+            totalOrders,
+            totalGamesLive,
+            activeUsers
+        });
+
+    } catch (error: any) {
+        console.error("Database Stats Error:", error);
+        res.status(500).json({ error: "Failed to fetch stats", details: error.message });
+    }
+});
+
+
+//Admin buyers
+app.get("/api/admin/buyers", async (req: Request, res: Response) => {
+    try {
+        const db = client.db(dbName);
+
+        const buyers = await db.collection("orders").aggregate([
+            {
+                $group: {
+                    _id: "$buyerId",
+                    name: { $first: "$buyerName" },
+                    email: { $first: "$buyerEmail" },
+                    totalOrders: { $sum: 1 },
+                    totalSpent: {
+                        $sum: {
+                            $cond: [{ $eq: ["$status", "approved"] }, { $multiply: ["$price", "$quantity"] }, 0]
+                        }
+                    },
+                    lastPurchase: { $max: "$purchasedAt" },
+                }
+            },
+            { $sort: { lastPurchase: -1 } }
+        ]).toArray();
+
+        res.json(buyers.map(b => ({
+            _id: b._id,
+            name: b.name,
+            email: b.email,
+            totalOrders: b.totalOrders,
+            totalSpent: b.totalSpent,
+            lastPurchase: b.lastPurchase,
+            joinedAt: b.lastPurchase, // placeholder — real join date better-auth user collection 
+        })));
+    } catch (error: any) {
+        res.status(500).json({ error: "Failed to fetch buyers", details: error.message });
     }
 });
 
@@ -98,8 +222,8 @@ app.post("/api/games", async (req: Request, res: Response) => {
         const db = client.db(dbName);
         const newGame = req.body;
 
-        if (newGame.quantity !== undefined) {
-            newGame.quantity = parseQuantity(newGame.quantity);
+        if (newGame.stock !== undefined) {
+            newGame.stock = parseQuantity(newGame.stock);
         }
         if (newGame.price !== undefined) {
             newGame.price = Number(newGame.price) || 0;
@@ -233,7 +357,7 @@ app.post("/api/games/:id/buy", async (req: Request, res: Response) => {
             return;
         }
 
-        // ✅ Correctly declared 'newOrder' before using it
+        // Correctly declared 'newOrder' before using it
         const newOrder = {
             gameId: id,
             gameTitle: game.title,
@@ -289,18 +413,32 @@ app.patch("/api/orders/:orderId/status", async (req: Request, res: Response) => 
             return;
         }
 
+        // if (status === "approved") {
+        //     const game = await db.collection("games").findOne({ _id: new ObjectId(order.gameId) });
+        //     const currentQty = parseQuantity(game?.quantity);
+
+        //     if (!game || currentQty < order.quantity) {
+        //         res.status(400).json({ error: "Cannot approve. Insufficient game stock!" });
+        //         return;
+        //     }
+
+        //     await db.collection("games").updateOne(
+        //         { _id: new ObjectId(order.gameId) },
+        //         { $set: { quantity: currentQty - order.quantity } }
+        //     );
+        // }
         if (status === "approved") {
             const game = await db.collection("games").findOne({ _id: new ObjectId(order.gameId) });
-            const currentQty = parseQuantity(game?.quantity);
+            const currentQty = parseQuantity(game?.stock);   // quantity → stock
 
-            if (!game || currentQty < order.quantity) {
+            if (!game || currentQty < order.quantity) {   // order.quantity ঠিকই আছে, এটা order-এর কত পিস কিনেছে সেটা বোঝায়, আলাদা জিনিস
                 res.status(400).json({ error: "Cannot approve. Insufficient game stock!" });
                 return;
             }
 
             await db.collection("games").updateOne(
                 { _id: new ObjectId(order.gameId) },
-                { $set: { quantity: currentQty - order.quantity } }
+                { $set: { stock: currentQty - order.quantity } }   // quantity → stock
             );
         }
 
@@ -318,18 +456,69 @@ app.patch("/api/orders/:orderId/status", async (req: Request, res: Response) => 
 
 
 // Order History
+// app.get("/api/orders", async (req: Request, res: Response) => {
+//     try {
+//         const db = client.db(dbName);
+//         const { buyerId } = req.query;
+
+//         const filter: Record<string, unknown> = {};
+//         if (buyerId) filter.buyerId = buyerId;
+//         //Status filter
+//         // if (status) filter.status = status;
+//         const { buyerId, status } = req.query;
+//         const orders = await db.collection("orders").find(filter).toArray();
+//         res.status(200).json(orders);
+//     } catch (error: any) {
+//         res.status(500).json({ error: "Failed to fetch orders", details: error.message });
+//     }
+// });
+
 app.get("/api/orders", async (req: Request, res: Response) => {
     try {
         const db = client.db(dbName);
-        const { buyerId } = req.query;
+        const { buyerId, status } = req.query;
 
         const filter: Record<string, unknown> = {};
         if (buyerId) filter.buyerId = buyerId;
+        if (status) filter.status = status;
 
         const orders = await db.collection("orders").find(filter).toArray();
         res.status(200).json(orders);
     } catch (error: any) {
         res.status(500).json({ error: "Failed to fetch orders", details: error.message });
+    }
+});
+
+//Search
+
+//  Search games API (For Navbar Search Functionality)
+app.get("/api/games/search", async (req: Request, res: Response) => {
+    try {
+        const db = client.db(dbName);
+        const { query } = req.query;
+
+        if (!query) {
+            res.status(400).json({ error: "Search query is required" });
+            return;
+        }
+
+        // Case-insensitive partial match query for title
+        const searchQuery = {
+            title: { $regex: String(query), $options: "i" }
+        };
+
+        const games = await db.collection("games").find(searchQuery).toArray();
+
+        // Data sanitization (stock & price formats alignment)
+        const sanitizedGames = games.map(game => ({
+            ...game,
+            quantity: parseQuantity(game.stock),
+            price: Number(game.price) || 0
+        }));
+
+        res.status(200).json(sanitizedGames);
+    } catch (error: any) {
+        res.status(500).json({ error: "Search failed", details: error.message });
     }
 });
 
