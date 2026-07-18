@@ -53,13 +53,45 @@ app.get("/api/games", async (req: Request, res: Response) => {
 
         const sanitizedGames = games.map(game => ({
             ...game,
-            quantity: parseQuantity(game.stock),
+            // quantity: parseQuantity(game.stock),
+            stock: parseQuantity(game.stock),
             price: Number(game.price) || 0
         }));
 
         res.status(200).json(sanitizedGames);
     } catch (error: any) {
         res.status(500).json({ error: "Failed to fetch games", details: error.message });
+    }
+});
+
+
+app.get("/api/games/search", async (req: Request, res: Response) => {
+    try {
+        const db = client.db(dbName);
+        const { query } = req.query;
+
+        if (!query) {
+            res.status(400).json({ error: "Search query is required" });
+            return;
+        }
+
+        // Case-insensitive partial match query for title
+        const searchQuery = {
+            title: { $regex: String(query), $options: "i" }
+        };
+
+        const games = await db.collection("games").find(searchQuery).toArray();
+
+        // Data sanitization (stock & price formats alignment)
+        const sanitizedGames = games.map(game => ({
+            ...game,
+            quantity: parseQuantity(game.stock),
+            price: Number(game.price) || 0
+        }));
+
+        res.status(200).json(sanitizedGames);
+    } catch (error: any) {
+        res.status(500).json({ error: "Search failed", details: error.message });
     }
 });
 
@@ -126,24 +158,7 @@ app.put("/api/games/:id", async (req: Request, res: Response) => {
 });
 
 //Admin Stats
-// app.get("/api/admin/stats", async (req: Request, res: Response) => {
-//     try {
-//         const db = client.db(dbName);
 
-//         const orders = await db.collection("orders").find({ status: "approved" }).toArray();
-//         const totalRevenue = orders.reduce((sum, o) => sum + (Number(o.price) || 0) * (Number(o.quantity) || 0), 0);
-
-//         const totalOrders = await db.collection("orders").countDocuments();
-//         const totalGamesLive = await db.collection("games").countDocuments();
-//         const activeUsers = (await db.collection("orders").distinct("buyerId")).length;
-
-//         res.json({ totalRevenue, totalOrders, totalGamesLive, activeUsers });
-//     } catch (error: any) {
-//         res.status(500).json({ error: "Failed to fetch stats", details: error.message });
-//     }
-// });
-
-//2
 
 app.get("/api/admin/stats", async (req: Request, res: Response) => {
     try {
@@ -235,6 +250,38 @@ app.post("/api/games", async (req: Request, res: Response) => {
         res.status(500).json({ error: "Failed to add game", details: error.message });
     }
 });
+
+//Games Search
+
+// app.get("/api/games/search", async (req: Request, res: Response) => {
+//     try {
+//         const db = client.db(dbName);
+//         const { query } = req.query;
+
+//         if (!query) {
+//             res.status(400).json({ error: "Search query is required" });
+//             return;
+//         }
+
+//         // Case-insensitive partial match query for title
+//         const searchQuery = {
+//             title: { $regex: String(query), $options: "i" }
+//         };
+
+//         const games = await db.collection("games").find(searchQuery).toArray();
+
+//         // Data sanitization (stock & price formats alignment)
+//         const sanitizedGames = games.map(game => ({
+//             ...game,
+//             quantity: parseQuantity(game.stock),
+//             price: Number(game.price) || 0
+//         }));
+
+//         res.status(200).json(sanitizedGames);
+//     } catch (error: any) {
+//         res.status(500).json({ error: "Search failed", details: error.message });
+//     }
+// });
 
 // Game Delete API
 app.delete("/api/games/:id", async (req: Request, res: Response) => {
@@ -491,36 +538,36 @@ app.get("/api/orders", async (req: Request, res: Response) => {
 
 //Search
 
-//  Search games API (For Navbar Search Functionality)
-app.get("/api/games/search", async (req: Request, res: Response) => {
-    try {
-        const db = client.db(dbName);
-        const { query } = req.query;
+//  Search games API (For Navbar Search Functionality) (final)
+// app.get("/api/games/search", async (req: Request, res: Response) => {
+//     try {
+//         const db = client.db(dbName);
+//         const { query } = req.query;
 
-        if (!query) {
-            res.status(400).json({ error: "Search query is required" });
-            return;
-        }
+//         if (!query) {
+//             res.status(400).json({ error: "Search query is required" });
+//             return;
+//         }
 
-        // Case-insensitive partial match query for title
-        const searchQuery = {
-            title: { $regex: String(query), $options: "i" }
-        };
+//         // Case-insensitive partial match query for title
+//         const searchQuery = {
+//             title: { $regex: String(query), $options: "i" }
+//         };
 
-        const games = await db.collection("games").find(searchQuery).toArray();
+//         const games = await db.collection("games").find(searchQuery).toArray();
 
-        // Data sanitization (stock & price formats alignment)
-        const sanitizedGames = games.map(game => ({
-            ...game,
-            quantity: parseQuantity(game.stock),
-            price: Number(game.price) || 0
-        }));
+//         // Data sanitization (stock & price formats alignment)
+//         const sanitizedGames = games.map(game => ({
+//             ...game,
+//             quantity: parseQuantity(game.stock),
+//             price: Number(game.price) || 0
+//         }));
 
-        res.status(200).json(sanitizedGames);
-    } catch (error: any) {
-        res.status(500).json({ error: "Search failed", details: error.message });
-    }
-});
+//         res.status(200).json(sanitizedGames);
+//     } catch (error: any) {
+//         res.status(500).json({ error: "Search failed", details: error.message });
+//     }
+// });
 
 // Database Connection
 async function startServer() {
